@@ -5,17 +5,6 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
-
-// ✅ CORS LIBERADO (permite acesso de qualquer site, ex: Hostinger)
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
-
-
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 const PORT = process.env.PORT || 3000;
@@ -34,7 +23,14 @@ const DEFAULT_UPGRADES = {
   multiShot:   { lvl:0, baseCost:0.00002, val: 0 },  // ⚔️ Chance de Múltiplos Disparos (%)
   mines:       { lvl:0, baseCost:0.2,     val: 0 },  // ⚔️ Minas Terrestres (qtd ativas)
   regen:       { lvl:0, baseCost:0.1,     val: 0 },  // 🛡️ Regeneração de Vida (hp/s)
-  lifeSteal:   { lvl:0, baseCost:0.0007,  val: 0 }   // 🛡️ Roubo de Vida (%)
+  lifeSteal:   { lvl:0, baseCost:0.0007,  val: 0 },  // 🛡️ Roubo de Vida (%)
+  thorns:      { lvl:0, baseCost:0.007,   val: 0 },  // 🌵 Espinhos (dano/s em inimigos próximos)
+  orbs:        { lvl:0, baseCost:10,      val: 0 },  // 🔮 Orbes (qtd ativa, máx 4)
+  orbSpeed:    { lvl:0, baseCost:5,       val: 0 },  // 💨 Velocidade do Orbe
+  lightning:   { lvl:0, baseCost:7,       val: 0 },  // ⚡ Relâmpago em Cadeia
+  missile:     { lvl:0, baseCost:7,       val: 0 },  // 🚀 Míssil (5 alvos + área)
+  bomb:        { lvl:0, baseCost:14,      val: 0 },  // ☢️ Super Bomba (explosão gigante)
+  vortex:      { lvl:0, baseCost:5,       val: 0 }   // 🌀 Vórtice (puxa + lentidão)
 };
 function ensureUpgrades(upg) {
   const out = {};
@@ -202,7 +198,7 @@ function getSafePositionFarFrom(farX, farY, minDist = MIN_DISTANCE_BETWEEN_PLAYE
 function newPlayerData(username) {
   const pos = getSafePosition();
   return {
-    username, coins: 5.00, wave: 1, waveTimer: 60, hp: 100, maxHp: 100,
+    username, coins: 10.00, wave: 1, waveTimer: 60, hp: 100, maxHp: 100,
     baseX: pos.x, baseY: pos.y, bestWave: 1, enemiesKilled: 0,
     friends: [], isGM: false, claimedMilestones: [], playerClass: null, alliance: null, allianceKills: 0, inventory: [],
     upgrades: {
@@ -557,6 +553,14 @@ app.post('/missions/claim', (req, res) => {
   return res.json({ success:true, reward: def.reward, coins: user.data.coins });
 });
 
+app.post('/gm/invasion', (req, res) => {
+  const { from } = req.body;
+  if (!db.users[from] || !db.users[from].data.isGM) return res.json({ success:false, error:'Apenas GM!' });
+  wss.clients.forEach(c=>{ if(c.readyState===1) c.send(JSON.stringify({ type:'invasion', count:30, duration:10 })); });
+  return res.json({ success:true, message:'⚠️ INVASÃO iniciada para todos!' });
+});
+setInterval(()=>{ wss.clients.forEach(c=>{ if(c.readyState===1) c.send(JSON.stringify({ type:'invasion', count:30, duration:10 })); }); }, 5*60*60*1000);
+
 // ========== WEBSOCKET ==========
 wss.on('connection', (ws) => {
   let username = null;
@@ -720,7 +724,9 @@ wss.on('connection', (ws) => {
             }
           });
           groups[groupId].enemies = [];
+          groups[groupId].wave = 1; groups[groupId].waveTimer = 60; groups[groupId].resetAt = Date.now();
           saveDB();
+          groups[groupId].members.forEach(m => sendTo(m, { type: 'group_death_reset' }));
         }
       }
       
@@ -787,10 +793,12 @@ wss.on('connection', (ws) => {
         const groupId = userToGroup[username];
         if (!groupId || !groups[groupId]) return;
         groups[groupId].enemies = msg.enemies;
-        groups[groupId].wave = msg.wave;
-        groups[groupId].waveTimer = msg.waveTimer;
+        if (!groups[groupId].resetAt || Date.now() - groups[groupId].resetAt > 3000) {
+          groups[groupId].wave = msg.wave;
+          groups[groupId].waveTimer = msg.waveTimer;
+        }
         const partner = groups[groupId].members.find(m => m !== username);
-        if (partner) sendTo(partner, { type: 'group_enemies_sync', enemies: msg.enemies, wave: msg.wave, waveTimer: msg.waveTimer });
+        if (partner) sendTo(partner, { type: 'group_enemies_sync', enemies: msg.enemies, wave: groups[groupId].wave, waveTimer: groups[groupId].waveTimer });
       }
       
     } catch (e) { console.log('Erro:', e); }
@@ -1072,7 +1080,7 @@ app.get('/alliance/invites', (req, res) => { res.json({ success: true, invite: d
 
 // ========== 🎒 INVENTÁRIO / ITENS NO MAPA ==========
 const WORLD_ITEM_TYPES = ['range','damage','targets','attackSpeed','defPercent','maxHp','coinGain','critFactor','multiShot','mines','regen','lifeSteal'];
-const ITEM_CATEGORY = { range:'ataque', damage:'ataque', targets:'ataque', attackSpeed:'ataque', critFactor:'ataque', multiShot:'ataque', defPercent:'defesa', maxHp:'defesa', regen:'defesa', lifeSteal:'defesa', mines:'defesa', coinGain:'util' };
+const ITEM_CATEGORY = { range:'ataque', damage:'ataque', targets:'ataque', attackSpeed:'ataque', critFactor:'ataque', multiShot:'ataque', defPercent:'defesa', maxHp:'defesa', regen:'defesa', lifeSteal:'defesa', mines:'defesa', thorns:'defesa', orbs:'defesa', orbSpeed:'defesa', coinGain:'util', lightning:'util', missile:'util', bomb:'util', vortex:'util' };
 const TRADE_TAX = { ataque: 0.50, defesa: 0.40, util: 0.30 };
 function spawnWorldItem() {
   if (db.worldItems.length >= 8) return;
@@ -1100,6 +1108,8 @@ app.post('/worlditems/collect', (req, res) => {
   if (clickX == null || clickY == null || Math.hypot(clickX - item.x, clickY - item.y) > 150) {
     return res.json({ success: false, error: 'Clique muito longe do item! Clique em cima do presente 🎁' });
   }
+  if (!user.data.inventorySlots) user.data.inventorySlots = 10;
+  if ((user.data.inventory || []).length >= user.data.inventorySlots) { return res.json({ success: false, error: 'Inventário cheio (' + user.data.inventorySlots + ' slots)! Expanda no menu Inventário.' }); }
   db.worldItems.splice(idx, 1);
   user.data.inventory.push(item.type);
   saveDB();
@@ -1119,7 +1129,19 @@ app.post('/gm/worlditems/spawn', (req, res) => {
 app.get('/inventory', (req, res) => {
   const user = db.users[req.query.username];
   if (!user) return res.json({ success: false, error: 'Não encontrado!' });
-  res.json({ success: true, inventory: user.data.inventory || [] });
+  if (!user.data.inventorySlots) user.data.inventorySlots = 10;
+  res.json({ success: true, inventory: user.data.inventory || [], inventorySlots: user.data.inventorySlots });
+});
+app.post('/inventory/expand', (req, res) => {
+  const { username } = req.body;
+  const user = db.users[username];
+  if (!user) return res.json({ success: false, error: 'Não encontrado!' });
+  if (!user.data.inventorySlots) user.data.inventorySlots = 10;
+  if ((user.data.coins || 0) < 1.00) return res.json({ success: false, error: 'Moedas insuficientes (R$1,00)!' });
+  user.data.coins -= 1.00;
+  user.data.inventorySlots += 10;
+  saveDB();
+  return res.json({ success: true, inventorySlots: user.data.inventorySlots, coins: user.data.coins });
 });
 // Recalcula o valor de um upgrade a partir do nível (mesma fórmula do cliente)
 function recomputeUpgradeVal(key, upg) {
@@ -1136,6 +1158,13 @@ function recomputeUpgradeVal(key, upg) {
     case 'mines': upg.val = upg.lvl; break;
     case 'regen': upg.val = upg.lvl * 0.8; break;
     case 'lifeSteal': upg.val = Math.min(50, upg.lvl * 0.5); break;
+    case 'thorns': upg.val = upg.lvl * 8; break;
+    case 'orbs': upg.val = Math.min(4, upg.lvl); break;
+    case 'orbSpeed': upg.val = Math.min(2.0, 0.3 + upg.lvl * 0.425); break;
+    case 'lightning': upg.val = upg.lvl; break;
+    case 'missile': upg.val = upg.lvl; break;
+    case 'bomb': upg.val = upg.lvl; break;
+    case 'vortex': upg.val = upg.lvl; break;
   }
 }
 app.post('/inventory/use', (req, res) => {
