@@ -95,6 +95,14 @@ function saveDB() { fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2)); }
 saveDB();
 
 app.use(express.json());
+// 🌐 CORS: permite frontend em outra hospedagem (ex: Hostinger) chamar este backend (Render)
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
 app.use(express.static('public', {
   setHeaders: (res, filePath) => {
     // Evita cache do HTML para os jogadores sempre receberem a versão mais nova (ícones etc.)
