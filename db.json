@@ -1,0 +1,136 @@
+{
+  "users": {
+    "[GM]TWM": {
+      "password": "Intelcore9@#",
+      "data": {
+        "username": "[GM]TWM",
+        "coins": 1000,
+        "wave": 1,
+        "waveTimer": 60,
+        "hp": 500,
+        "maxHp": 500,
+        "baseX": 20000,
+        "baseY": 20000,
+        "bestWave": 1,
+        "enemiesKilled": 0,
+        "friends": [],
+        "isGM": true,
+        "claimedMilestones": [],
+        "playerClass": null,
+        "alliance": null,
+        "allianceKills": 0,
+        "inventory": [],
+        "upgrades": {
+          "range": {
+            "lvl": 1,
+            "baseCost": 0.01,
+            "val": 155
+          },
+          "damage": {
+            "lvl": 1,
+            "baseCost": 0.02,
+            "val": 1.6
+          },
+          "targets": {
+            "lvl": 0,
+            "baseCost": 0.02,
+            "val": 1
+          },
+          "attackSpeed": {
+            "lvl": 0,
+            "baseCost": 0.015,
+            "val": 0
+          },
+          "defPercent": {
+            "lvl": 0,
+            "baseCost": 0.03,
+            "val": 0
+          },
+          "maxHp": {
+            "lvl": 0,
+            "baseCost": 0.002,
+            "val": 0
+          },
+          "coinGain": {
+            "lvl": 0,
+            "baseCost": 0.05,
+            "val": 0
+          },
+          "critFactor": {
+            "lvl": 0,
+            "baseCost": 0.05,
+            "val": 0
+          },
+          "multiShot": {
+            "lvl": 0,
+            "baseCost": 0.00002,
+            "val": 0
+          },
+          "mines": {
+            "lvl": 0,
+            "baseCost": 0.2,
+            "val": 0
+          },
+          "regen": {
+            "lvl": 0,
+            "baseCost": 0.1,
+            "val": 0
+          },
+          "lifeSteal": {
+            "lvl": 0,
+            "baseCost": 0.0007,
+            "val": 0
+          },
+          "thorns": {
+            "lvl": 0,
+            "baseCost": 0.007,
+            "val": 0
+          },
+          "orbs": {
+            "lvl": 0,
+            "baseCost": 10,
+            "val": 0
+          },
+          "orbSpeed": {
+            "lvl": 0,
+            "baseCost": 5,
+            "val": 0
+          },
+          "lightning": {
+            "lvl": 0,
+            "baseCost": 7,
+            "val": 0
+          },
+          "missile": {
+            "lvl": 0,
+            "baseCost": 7,
+            "val": 0
+          },
+          "bomb": {
+            "lvl": 0,
+            "baseCost": 14,
+            "val": 0
+          },
+          "vortex": {
+            "lvl": 0,
+            "baseCost": 5,
+            "val": 0
+          }
+        }
+      }
+    }
+  },
+  "banned": [],
+  "worldItems": [
+    {
+      "id": "1790520436159_wpv5n",
+      "type": "maxHp",
+      "x": 22504.65128947293,
+      "y": 14626.94365932974,
+      "spawnedAt": 1790520436159
+    }
+  ],
+  "pendingInvites": {},
+  "eventHistory": [],
+  "alliances": {}
+}
