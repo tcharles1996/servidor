@@ -57,7 +57,21 @@ if (fs.existsSync(DB_PATH)) {
       if (!db.users[u].data.alliance) db.users[u].data.alliance = null;
       if (db.users[u].data.allianceKills === undefined) db.users[u].data.allianceKills = 0;
       if (!db.users[u].data.inventory) db.users[u].data.inventory = [];
+      // 🔄 MIGRAÇÃO NOVAS MELHORIAS: prestígio, pets, torres, conquistas expandidas, sons
+      if (db.users[u].data.prestigeLevel === undefined) db.users[u].data.prestigeLevel = 0;
+      if (db.users[u].data.prestigePoints === undefined) db.users[u].data.prestigePoints = 0;
+      if (!db.users[u].data.prestigeBonuses) db.users[u].data.prestigeBonuses = { defMult: 0, dmgMult: 0, hpMult: 0 };
+      if (!db.users[u].data.pets) db.users[u].data.pets = { fire: { owned: false, level: 0 }, ice: { owned: false, level: 0 }, thunder: { owned: false, level: 0 } };
+      if (!db.users[u].data.towers) db.users[u].data.towers = [];
+      if (!db.users[u].data.achievements) db.users[u].data.achievements = {};
+      if (db.users[u].data.totalKillsAllTime === undefined) db.users[u].data.totalKillsAllTime = db.users[u].data.enemiesKilled || 0;
+      if (!Array.isArray(db.users[u].data.friends)) db.users[u].data.friends = []; // 🐛 garante campo friends
+      // 📜 SEASON PASS: migração
+      if (db.users[u].data.seasonXp === undefined) db.users[u].data.seasonXp = 0;
+      if (!db.users[u].data.seasonClaimed) db.users[u].data.seasonClaimed = [];
     }
+// 📜 SEASON PASS: início da temporada (global, 30 dias)
+if (!db.seasonStart) { db.seasonStart = Date.now(); saveDB(); }
   }
   catch(e) { db = { users: {}, banned: [] }; }
 }
@@ -95,14 +109,6 @@ function saveDB() { fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2)); }
 saveDB();
 
 app.use(express.json());
-// 🌐 CORS: permite frontend em outra hospedagem (ex: Hostinger) chamar este backend (Render)
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
 app.use(express.static('public', {
   setHeaders: (res, filePath) => {
     // Evita cache do HTML para os jogadores sempre receberem a versão mais nova (ícones etc.)
@@ -258,13 +264,26 @@ function createGroup(user1, user2) {
   userToGroup[user2] = groupId;
   saveDB();
   
+  // 🗼 Torres auxiliares: reposicionar para perto da nova base (não somem!)
+  [user1, user2].forEach(u => {
+    const d = db.users[u].data;
+    if (Array.isArray(d.towers) && d.towers.length) {
+      d.towers.forEach((t, i) => {
+        const ang = (i / d.towers.length) * Math.PI * 2;
+        t.x = d.baseX + Math.cos(ang) * 150;
+        t.y = d.baseY + Math.sin(ang) * 150;
+      });
+    }
+  });
+  saveDB();
   [user1, user2].forEach(u => {
     const partner = u === user1 ? user2 : user1;
     sendTo(u, {
       type: 'group_formed',
       partner: partner,
       yourBase: { x: db.users[u].data.baseX, y: db.users[u].data.baseY },
-      partnerBase: { x: db.users[partner].data.baseX, y: db.users[partner].data.baseY }
+      partnerBase: { x: db.users[partner].data.baseX, y: db.users[partner].data.baseY },
+      towers: db.users[u].data.towers || []
     });
   });
 }
@@ -328,7 +347,7 @@ app.post('/auth', (req, res) => {
     // 🔄 Garante upgrades novos no login
     user.data.upgrades = ensureUpgrades(user.data.upgrades);
     saveDB();
-    return res.json({ success: true, data: user.data });
+    return res.json({ success: true, data: user.data, friends: user.data.friends || [] });
   }
 });
 
@@ -706,9 +725,17 @@ wss.on('connection', (ws) => {
             const newKills = msg.state.enemiesKilled - (d.enemiesKilled || 0);
             if (newKills > 0) d.allianceKills = (d.allianceKills || 0) + newKills;
           }
+          const newKillsForSeason = Math.max(0, msg.state.enemiesKilled - (d.enemiesKilled || 0));
           d.enemiesKilled = msg.state.enemiesKilled;
+          if (newKillsForSeason > 0) {
+            d.seasonXp = (d.seasonXp || 0) + newKillsForSeason; // 1 XP por kill
+          }
         }
-        if (msg.state.bestWave !== undefined && msg.state.bestWave > (d.bestWave || 0)) d.bestWave = msg.state.bestWave;
+        if (msg.state.bestWave !== undefined && msg.state.bestWave > (d.bestWave || 0)) {
+          const wavesGained = msg.state.bestWave - (d.bestWave || 1);
+          d.bestWave = msg.state.bestWave;
+          d.seasonXp = (d.seasonXp || 0) + wavesGained * 20; // 20 XP por nova onda alcançada
+        }
         saveDB();
         
         // ✅ REMOVIDO: sobrescrever moedas do parceiro
@@ -1182,6 +1209,11 @@ app.post('/inventory/use', (req, res) => {
   const inv = user.data.inventory || [];
   const idx = inv.indexOf(itemType);
   if (idx === -1) return res.json({ success: false, error: 'Item não está no inventário!' });
+  if (itemType === 'tower') {
+    inv.splice(idx, 1);
+    saveDB();
+    return res.json({ success: true, message: 'Torre guardada! Posicione no mapa.', inventory: inv, tower: true });
+  }
   if (!DEFAULT_UPGRADES[itemType]) return res.json({ success: false, error: 'Tipo inválido!' });
   inv.splice(idx, 1);
   const upg = user.data.upgrades[itemType];
@@ -1214,8 +1246,247 @@ app.post('/inventory/trade', (req, res) => {
   return res.json({ success: true, message: `Enviado! Taxa: R$${tax.toFixed(2)}`, inventory: inv });
 });
 
+// ========== 🔄 SISTEMA DE PRESTÍGIO (Reencarnação) ==========
+// Ao atingir onda >= 100, o jogador pode reencarnar: reseta progresso
+// mas ganha Pontos de Prestígio para multiplicadores permanentes.
+const PRESTIGE_REQUIRED_WAVE = 200;
+function prestigePointsForWave(wave) {
+  // 1 ponto a cada 100 ondas, com escala suave
+  return Math.max(1, Math.floor((Math.max(0, wave - PRESTIGE_REQUIRED_WAVE + 1)) / 50) + 1);
+}
+app.post('/prestige/do', (req, res) => {
+  const { username } = req.body;
+  const user = db.users[username];
+  if (!user) return res.json({ success: false, error: 'Usuário não encontrado!' });
+  const d = user.data;
+  if ((d.bestWave || 1) < PRESTIGE_REQUIRED_WAVE) {
+    return res.json({ success: false, error: `Você precisa chegar à onda ${PRESTIGE_REQUIRED_WAVE} para reencarnar! (Atual: ${d.bestWave||1})` });
+  }
+  const pointsEarned = prestigePointsForWave(d.bestWave || 1);
+  d.prestigeLevel = (d.prestigeLevel || 0) + 1;
+  d.prestigePoints = (d.prestigePoints || 0) + pointsEarned;
+  d.totalKillsAllTime = (d.totalKillsAllTime || 0) + (d.enemiesKilled || 0);
+  // Reseta progresso do jogo (mantém prestígio, amigos, aliança, conta)
+  const pos = getSafePosition();
+  d.coins = 10.00; d.wave = 1; d.waveTimer = 60; d.maxHp = 100; d.hp = 100;
+  d.baseX = pos.x; d.baseY = pos.y; d.bestWave = 1; d.enemiesKilled = 0;
+  d.claimedMilestones = []; d.towers = [];
+  d.upgrades = JSON.parse(JSON.stringify(DEFAULT_UPGRADES));
+  // Mantém pets e upgrades de prestígio
+  saveDB();
+  sendTo(username, { type: 'prestige_done', prestigeLevel: d.prestigeLevel, prestigePoints: d.prestigePoints });
+  broadcast({ type: 'notice', text: `🔄 ${username} REENCARNOU pela ${d.prestigeLevel}ª vez! (+${pointsEarned} pontos de prestígio)` });
+  return res.json({ success: true, message: `Reencarnação ${d.prestigeLevel}! +${pointsEarned} pontos. Progresso resetado.`, prestigeLevel: d.prestigeLevel, prestigePoints: d.prestigePoints, data: d });
+});
+app.post('/prestige/upgrade', (req, res) => {
+  const { username, bonusType } = req.body;
+  const user = db.users[username];
+  if (!user) return res.json({ success: false, error: 'Usuário não encontrado!' });
+  const d = user.data;
+  if ((d.prestigePoints || 0) < 1) return res.json({ success: false, error: 'Sem pontos de prestígio!' });
+  if (!['defMult', 'dmgMult', 'hpMult'].includes(bonusType)) return res.json({ success: false, error: 'Bônus inválido!' });
+  d.prestigeBonuses = d.prestigeBonuses || { defMult: 0, dmgMult: 0, hpMult: 0 };
+  d.prestigeBonuses[bonusType] = (d.prestigeBonuses[bonusType] || 0) + 1;
+  d.prestigePoints -= 1;
+  if (bonusType === 'hpMult') {
+    const bonus = d.prestigeBonuses.hpMult * 50;
+    d.maxHp = 100 + (d.upgrades.maxHp?.val || 0) + bonus;
+    d.hp = Math.min(d.hp + 50, d.maxHp);
+  }
+  saveDB();
+  return res.json({ success: true, message: 'Bônus de prestígio aumentado!', prestigePoints: d.prestigePoints, prestigeBonuses: d.prestigeBonuses, maxHp: d.maxHp, hp: d.hp });
+});
+// ========== 🐾 SISTEMA DE PETS ==========
+const PET_DEFS = {
+  fire:    { name: 'Dragão de Fogo',  baseCost: 50,  upgradeCost: 20, desc: 'Ataque em área (queima inimigos próximos)' },
+  ice:     { name: 'Lobo de Gelo',    baseCost: 40,  upgradeCost: 15, desc: 'Ataque que lentifica os inimigos' },
+  thunder: { name: 'Pássaro do Trovão', baseCost: 80, upgradeCost: 30, desc: 'Relâmpago em cadeia (3 alvos)' }
+};
+app.get('/pets/status', (req, res) => {
+  const user = db.users[req.query.username];
+  if (!user) return res.json({ success: false, error: 'Não encontrado!' });
+  return res.json({ success: true, pets: user.data.pets || {} });
+});
+app.post('/pets/buy', (req, res) => {
+  const { username, petType } = req.body;
+  const user = db.users[username];
+  if (!user) return res.json({ success: false, error: 'Não encontrado!' });
+  const def = PET_DEFS[petType];
+  if (!def) return res.json({ success: false, error: 'Pet inválido!' });
+  const d = user.data;
+  d.pets = d.pets || { fire: { owned: false, level: 0 }, ice: { owned: false, level: 0 }, thunder: { owned: false, level: 0 } };
+  if (d.pets[petType].owned) return res.json({ success: false, error: 'Você já tem este pet!' });
+  if ((d.coins || 0) < def.baseCost) return res.json({ success: false, error: `Moedas insuficientes! Precisa de R$${def.baseCost.toFixed(2)}` });
+  d.coins -= def.baseCost;
+  d.pets[petType].owned = true;
+  d.pets[petType].level = 1;
+  saveDB();
+  sendTo(username, { type: 'coins_sync', coins: d.coins });
+  return res.json({ success: true, message: `${def.name} se juntou a você!`, pets: d.pets, coins: d.coins });
+});
+app.post('/pets/upgrade', (req, res) => {
+  const { username, petType } = req.body;
+  const user = db.users[username];
+  if (!user) return res.json({ success: false, error: 'Não encontrado!' });
+  const def = PET_DEFS[petType];
+  if (!def) return res.json({ success: false, error: 'Pet inválido!' });
+  const d = user.data;
+  const pet = d.pets?.[petType];
+  if (!pet || !pet.owned) return res.json({ success: false, error: 'Você não tem este pet!' });
+  const cost = def.upgradeCost * Math.pow(1.6, pet.level - 1);
+  if ((d.coins || 0) < cost) return res.json({ success: false, error: `Moedas insuficientes! Precisa de R$${cost.toFixed(2)}` });
+  d.coins -= cost;
+  pet.level += 1;
+  saveDB();
+  sendTo(username, { type: 'coins_sync', coins: d.coins });
+  return res.json({ success: true, message: `${def.name} → Nível ${pet.level}!`, pets: d.pets, coins: d.coins });
+});
+// ========== 🗼 TORRES AUXILIARES POSICIONÁVEIS ==========
+const MAX_TOWERS = 3;
+app.post('/towers/save', (req, res) => {
+  const { username, towers } = req.body;
+  const user = db.users[username];
+  if (!user) return res.json({ success: false, error: 'Não encontrado!' });
+  if (!Array.isArray(towers)) return res.json({ success: false, error: 'Formato inválido!' });
+  user.data.towers = towers.slice(0, MAX_TOWERS).map(t => ({ x: Number(t.x)||0, y: Number(t.y)||0, level: Math.max(1, Math.min(5, Number(t.level)||1)) }));
+  saveDB();
+  return res.json({ success: true, towers: user.data.towers });
+});
+app.get('/towers/status', (req, res) => {
+  const user = db.users[req.query.username];
+  if (!user) return res.json({ success: false, error: 'Não encontrado!' });
+  return res.json({ success: true, towers: user.data.towers || [], maxTowers: MAX_TOWERS });
+});
+// 🎒 Guardar torre no inventário (remove do mapa, adiciona item 'tower')
+app.post('/towers/store', (req, res) => {
+  const { username, index } = req.body;
+  const user = db.users[username];
+  if (!user) return res.json({ success: false, error: 'Não encontrado!' });
+  const d = user.data;
+  d.towers = d.towers || [];
+  const idx = parseInt(index);
+  if (isNaN(idx) || idx < 0 || idx >= d.towers.length) return res.json({ success: false, error: 'Torre não encontrada!' });
+  d.towers.splice(idx, 1);
+  d.inventory = d.inventory || [];
+  d.inventory.push('tower');
+  saveDB();
+  return res.json({ success: true, message: 'Torre guardada no inventário!', towers: d.towers, inventory: d.inventory });
+});
+// ========== 🏅 CONQUISTAS EXPANDIDAS ==========
+const ACHIEVEMENT_DEFS = {
+  kill100:   { target: 100,   reward: 0.50,  name: 'Caçador Iniciante',  type: 'kills', desc: 'Mate 100 inimigos' },
+  kill1000:  { target: 1000,  reward: 2.00,  name: 'Caçador Experiente', type: 'kills', desc: 'Mate 1.000 inimigos' },
+  kill10000: { target: 10000, reward: 10.00, name: 'Lenda da Matança',   type: 'kills', desc: 'Mate 10.000 inimigos' },
+  wave50:    { target: 50,    reward: 1.00,  name: 'Sobrevivente',       type: 'wave',  desc: 'Chegue à onda 50' },
+  wave200:   { target: 200,   reward: 5.00,  name: 'Implacável',         type: 'wave',  desc: 'Chegue à onda 200' },
+  upgrades50:  { target: 50,  reward: 1.50,  name: 'Melhorador Nato',    type: 'upgrades', desc: 'Faça 50 upgrades' },
+  upgrades200: { target: 200, reward: 5.00,  name: 'Mestre dos Upgrades', type: 'upgrades', desc: 'Faça 200 upgrades' },
+  pvp5:      { target: 5,     reward: 3.00,  name: 'Gladiador',          type: 'pvp',   desc: 'Vença 5 batalhas PVP' },
+  prestige1: { target: 1,     reward: 20.00, name: 'Renascido',          type: 'prestige', desc: 'Reencarne 1 vez' }
+};
+app.get('/achievements/v2', (req, res) => {
+  const user = db.users[req.query.username];
+  if (!user) return res.json({ success: false, error: 'Não encontrado!' });
+  const d = user.data;
+  const totalUpgrades = Object.values(d.upgrades||{}).reduce((a,u)=>a+(u.lvl||0),0);
+  const progress = {
+    kills: d.totalKillsAllTime || d.enemiesKilled || 0,
+    wave: d.bestWave || 1,
+    upgrades: totalUpgrades,
+    pvp: d.pvpWins || 0,
+    prestige: d.prestigeLevel || 0
+  };
+  const list = Object.entries(ACHIEVEMENT_DEFS).map(([id, def]) => ({
+    id, name: def.name, desc: def.desc, target: def.target, reward: def.reward, type: def.type,
+    progress: Math.min(progress[def.type], def.target),
+    claimed: !!(d.achievements && d.achievements[id])
+  }));
+  return res.json({ success: true, achievements: list });
+});
+app.post('/achievements/v2/claim', (req, res) => {
+  const { username, achievementId } = req.body;
+  const user = db.users[username];
+  if (!user) return res.json({ success: false, error: 'Não encontrado!' });
+  const def = ACHIEVEMENT_DEFS[achievementId];
+  if (!def) return res.json({ success: false, error: 'Conquista inválida!' });
+  const d = user.data;
+  d.achievements = d.achievements || {};
+  if (d.achievements[achievementId]) return res.json({ success: false, error: 'Já resgatada!' });
+  const totalUpgrades = Object.values(d.upgrades||{}).reduce((a,u)=>a+(u.lvl||0),0);
+  const progress = { kills: d.totalKillsAllTime || d.enemiesKilled || 0, wave: d.bestWave||1, upgrades: totalUpgrades, pvp: d.pvpWins||0, prestige: d.prestigeLevel||0 };
+  if ((progress[def.type]||0) < def.target) return res.json({ success: false, error: 'Progresso insuficiente!' });
+  d.achievements[achievementId] = true;
+  d.coins = (d.coins||0) + def.reward;
+  saveDB();
+  sendTo(username, { type: 'coins_sync', coins: d.coins });
+  return res.json({ success: true, message: `🏅 ${def.name}! +R$${def.reward.toFixed(2)}`, coins: d.coins });
+});
+
+
+// ========== 📜 SEASON PASS ==========
+const SEASON_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 dias
+const SEASON_MAX_LEVEL = 30;
+function xpForLevel(level) { return 80 + level * 60; } // XP necessário para passar do level N para N+1
+function seasonLevelFromXp(xp) {
+  let level = 1, remaining = xp || 0;
+  while (level < SEASON_MAX_LEVEL && remaining >= xpForLevel(level)) { remaining -= xpForLevel(level); level++; }
+  return { level: Math.min(SEASON_MAX_LEVEL, level), intoLevel: remaining, needed: xpForLevel(Math.min(level, SEASON_MAX_LEVEL)) };
+}
+function seasonReward(level) {
+  // Níveis ímpares: moedas (crescente). Pares: item de upgrade. Nível 30: prêmio grande.
+  if (level >= SEASON_MAX_LEVEL) return { type: 'coins', amount: 50, label: 'R$50,00 + Item Épico', item: 'damage' };
+  if (level % 2 === 0) {
+    const items = ['damage','range','attackSpeed','critFactor','maxHp','coinGain'];
+    return { type: 'item', item: items[(level/2 - 1) % items.length], label: 'Upgrade no Inventário' };
+  }
+  return { type: 'coins', amount: +(0.5 + level * 0.25).toFixed(2), label: `R$${(0.5 + level * 0.25).toFixed(2)}` };
+}
+app.get('/season/status', (req, res) => {
+  const user = db.users[req.query.username];
+  if (!user) return res.json({ success: false, error: 'Não encontrado!' });
+  if (!user.data.isGM) return res.json({ success: false, error: 'Season Pass disponível apenas para GM!' });
+  const d = user.data;
+  // Reseta temporada se passou de 30 dias
+  if (Date.now() - (db.seasonStart || Date.now()) > SEASON_DURATION_MS) {
+    db.seasonStart = Date.now();
+    for (const u of Object.keys(db.users)) { db.users[u].data.seasonXp = 0; db.users[u].data.seasonClaimed = []; }
+    saveDB();
+  }
+  const info = seasonLevelFromXp(d.seasonXp || 0);
+  const rewards = [];
+  for (let lv = 1; lv <= SEASON_MAX_LEVEL; lv++) {
+    rewards.push({ level: lv, reward: seasonReward(lv), claimed: (d.seasonClaimed||[]).includes(lv), unlocked: info.level >= lv });
+  }
+  return res.json({ success: true, xp: d.seasonXp||0, level: info.level, intoLevel: info.intoLevel, needed: info.needed, seasonEndAt: (db.seasonStart||0) + SEASON_DURATION_MS, rewards: rewards });
+});
+app.post('/season/claim', (req, res) => {
+  const { username, level } = req.body;
+  const user = db.users[username];
+  if (!user) return res.json({ success: false, error: 'Não encontrado!' });
+  if (!user.data.isGM) return res.json({ success: false, error: 'Season Pass disponível apenas para GM!' });
+  const d = user.data;
+  const lv = parseInt(level);
+  if (isNaN(lv) || lv < 1 || lv > SEASON_MAX_LEVEL) return res.json({ success: false, error: 'Nível inválido!' });
+  const info = seasonLevelFromXp(d.seasonXp || 0);
+  if (info.level < lv) return res.json({ success: false, error: `Você precisa chegar ao nível ${lv} do Season Pass!` });
+  d.seasonClaimed = d.seasonClaimed || [];
+  if (d.seasonClaimed.includes(lv)) return res.json({ success: false, error: 'Já resgatado!' });
+  const rw = seasonReward(lv);
+  d.seasonClaimed.push(lv);
+  if (rw.type === 'coins') {
+    d.coins = (d.coins || 0) + rw.amount;
+    sendTo(username, { type: 'coins_sync', coins: d.coins });
+  }
+  if (rw.item) {
+    (d.inventory = d.inventory || []).push(rw.item);
+  }
+  saveDB();
+  return res.json({ success: true, message: `📜 Season Pass Nível ${lv}: ${rw.label}!`, reward: rw, coins: d.coins });
+});
+
 server.listen(PORT, () => {
   console.log(`🚀 Servidor rodando | Mapa: ${MAP_WIDTH}x${MAP_HEIGHT} | Porta: ${PORT}`);
   console.log(`👑 GM: ${GM_ACCOUNT} / ${GM_PASSWORD}`);
   console.log(`💰 Sistema: Dinheiro individual + Ganhos iguais em grupo`);
+  console.log(`✨ NOVO: Prestígio, Pets, Torres Auxiliares, Conquistas v2, Season Pass`);
 });
